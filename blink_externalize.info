@@ -1,0 +1,8 @@
+name = Blink Externalizer
+description = "Uses Shorten module to generate externalized versions of blink links (which blink automatically uses)."
+core = 7.x
+package = "* Link Collaboration Tools"
+dependencies[] = blink
+dependencies[] = shorten
+files[] = blink_externalize.module
+configure = admin/config/development/blink/settings

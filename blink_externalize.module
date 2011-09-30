@@ -1,0 +1,117 @@
+<?php
+
+/**
+ *
+ * @file
+ * Blink externlizer
+ * Ties blink and shorten module together to use externalized links
+ *
+ */
+  
+ 
+ function blink_externalize_menu() {   
+   /*
+  $items['admin/config/development/blink/externalize/forceupdate'] = array(  
+    'description' => 'Call cronjob directly to update blink fields.',
+    'page callback' => 'blink_externalize_update_blink_cronjob',  
+    'access arguments' => array('administer site configuration'), 
+    'type'  => MENU_CALLBACK,
+  );  
+ return $items; 
+ * */
+}
+
+/**
+ * Implements hook_menu().
+ */
+function blink_externalize_cron() {  
+  // goes through blink table looking for links without externalized options updates with externlized link
+  if (variable_get('blink_externalize_last_blink_update', 0) < strtotime('-1 hour')) { 
+    blink_externalize_update_blink_cronjob();
+    variable_set('blink_externalize_last_blink_update', REQUEST_TIME);
+  }
+  if (isset($_REQUEST['destination'])) drupal_goto(urlencode($_REQUEST['destination'])); 
+}
+ 
+
+function blink_externalize_form_blink_admin_settings_form_alter(&$form, &$form_state, $form_id) {  
+  $form['externlize_options']  = array(
+    '#type'         => 'fieldset',
+    '#title'        => t('Blink Externalizer'),
+    '#description'  => t('The "Blink Externalizer" module allows you to replace blink links with externalized (short url) versions. This is especially useful for RSS and interal links.'),
+    '#collapsible'  => TRUE,
+    '#collapsed'    => TRUE,
+  );
+  $form['externlize_options']['blink_externalize_randomize_services'] = array(
+    '#type'       => 'checkbox',
+    '#title'      => t('Randomize services'),
+    '#default_value'   => variable_get('blink_externalize_randomize_services', TRUE),
+    '#description'    => t('Each time a link is generated, randomly pick an external linking service. You can select available services here: ') . l(t('shorten module settings page'), 'admin/config/shorten/general'),
+  );  
+  /*
+  $dest = array('destination' => "admin/config/development/blink/settings");
+  $update_url = 'admin/config/development/blink/externalize/forceupdate';
+  $form['externlize_options']['blink_externalize_force_update'] = array(
+    '#markup' => l(t('Force Update Now'), $update_url, array('query' => $dest)), 
+  ); */
+  $form['#submit'][] = 'blink_externalize_adminform_submit';
+}
+
+function blink_externalize_adminform_submit() {
+  blink_externalize_update_blink_cronjob(); // update shorten links  
+}
+
+
+function blink_externalize_needed() {
+  $return (db_query("SELECT count(*) FROM {blink_links} WHERE url_override=''")->fetchField()
+    || db_query("SELECT count(*) FROM {blink_goals} WHERE short_url=''")->fetchField()); 
+}
+ 
+function blink_externalize_update_blink_cronjob() {  
+  // quick lookup list so that we never have to fetch a short url twice (it's slow)
+  $quick = array();
+  $query = db_query("SELECT * FROM {blink_goals} WHERE short_url > ''"); 
+  foreach ($query as $row) $quick[$row->url] = $row->short_url;
+  // drupal_set_message("blink_externalize_update_blink_cronjob: <pre>".print_r($quick, true)."</pre>");
+  $start = strtotime("now"); 
+  $query = db_query("SELECT * FROM {blink_goals} WHERE short_url=''"); 
+  if (count($query)) foreach ($query as $row) {  
+    $short_url = isset($quick[$row->url]) ? $quick[$row->url] : blink_externalize_shorten_url($row->url); 
+    $quick[$row->url] = $short_url;
+    db_update('blink_goals')->fields(array('short_url' => $short_url))
+      ->condition('gid', $row->gid)->execute(); 
+      //drupal_set_message("Shortened goal {$row->url} -> ". $short_url); 
+    if (strtotime("-5 second") > $start) break; // don't go over 20 seconds per run
+  }  
+  $query = db_query("SELECT * FROM {blink_links} WHERE url_override=''");  
+  if (count($query)) foreach ($query as $row) {   
+    drupal_set_message("Shortening link {$row->page} -> ". blink_externalize_shorten_url($row->page)); 
+    $url_override = isset($quick[$row->page]) ? $quick[$row->page] : blink_externalize_shorten_url($row->page); 
+    $quick[$row->page] = $url_override;
+    db_update('blink_links') ->fields(array('url_override' => $url_override))
+      ->condition('liid', $row->liid)->execute(); 
+      //drupal_set_message("Shortened link {$row->url} -> ". $url_override); 
+    if (strtotime("-10 second") > $start) break; // don't go over 20 seconds per run
+  }  
+ /* */ 
+  if (isset($_REQUEST['destination'])) drupal_goto(urlencode($_REQUEST['destination'])); 
+}
+
+  
+function blink_externalize_shorten_url($long_url) { 
+  if (!module_exists('shorten')) return ''; 
+  if (!_blink_externalize_is_local_url($long_url)) return $long_url;   
+  // randomize shorten service between all available services
+  $avail_services = module_invoke_all('shorten_service'); 
+  $invisible = variable_get('shorten_invisible_services', array());
+  foreach ($invisible as $service => $hide) if ($hide) unset($avail_services[$service]);  
+  $service = array_rand($avail_services);  
+  $short_url = shorten_url($long_url, $service); 
+  if (!_blink_externalize_is_local_url($short_url)) return $short_url;  
+}
+
+function _blink_externalize_is_local_url($url) {
+  $url =  url($url, array('absolute' => TRUE));
+  $result = (boolean) strpos($url, $_SERVER['SERVER_NAME']) > 0; 
+  return $result;
+}
